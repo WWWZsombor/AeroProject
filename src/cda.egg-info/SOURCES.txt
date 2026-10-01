@@ -7,7 +7,10 @@ src/cda.egg-info/dependency_links.txt
 src/cda.egg-info/requires.txt
 src/cda.egg-info/top_level.txt
 src/cda/pipeline/__init__.py
+src/cda/pipeline/config_loader.py
 src/cda/pipeline/main.py
+src/cda/postprocessing/__init__.py
+src/cda/postprocessing/plotting.py
 src/cda/preprocessing/__init__.py
 src/cda/preprocessing/calibration.py
 src/cda/preprocessing/segment_finder.py

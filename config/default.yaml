@@ -24,6 +24,26 @@ preprocessing:
   calibrate_altitude:      false
   speed_correction:        1.0        # multiply every speed value by this
 
+plot:
+  speed_factor:          1.0
+  fig_width:             12
+  fig_height_per_row:    3.2
+  dpi:                   150
+  formats:               ["png", "svg"]
+  show_segment_labels:   true
+  show_glow:             true          # ← new: neon glow under each segment
+  line_width_base:       1.0
+  line_width_seg:        2.2
+   # cyberpunk palette – one colour per segment, in time order
+  palette:
+    - "#00f0ff"       # 0  neon cyan
+    - "#ff2d78"       # 1  neon pink
+    - "#ff8c00"       # 2  neon orange
+    - "#b026ff"       # 3  electric purple
+    - "#39ff14"       # 4  neon green   (spare, if segment_num ≥ 5)
+    - "#ffea00"       # 5  neon yellow  (spare)
+# ─────────────────────────────────────────────────────────────
+
 
 
 solver:
@@ -36,8 +56,3 @@ cyclist_defaults:
   mass_kg: 72
   c_rr: 0.004
   wheel_radius_m: 0.335
-
-plot:
-  style: 'seaborn-v0_8-whitegrid'
-  dpi: 150
-  formats: ['png', 'svg']

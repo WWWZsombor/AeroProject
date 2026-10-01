@@ -66,10 +66,52 @@ class PathsCfg:
 
 
 @dataclass(frozen=True)
+class PlotCfg:
+    speed_factor:          float   = 1.0
+    fig_width:             float   = 12
+    fig_height_per_row:    float   = 3.2
+    dpi:                   int     = 150
+    formats:               tuple   = ("png", "svg")
+    show_segment_labels:   bool    = True
+    show_glow:             bool    = True          # ← new
+    line_width_base:       float   = 1.0
+    line_width_seg:        float   = 2.2
+    palette:               tuple   = (             # ← new
+         "#00f0ff",
+         "#ff2d78",
+         "#ff8c00",
+         "#b026ff",
+         "#39ff14",
+         "#ffea00",
+    )
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PlotCfg":
+        fmts  = d.get("formats", ["png", "svg"])
+        palette = tuple(d.get("palette", [
+            "#00f0ff", "#ff2d78", "#ff8c00",
+            "#b026ff", "#39ff14", "#ffea00",
+        ]))
+        return cls(
+            speed_factor=float(d.get("speed_factor", 1.0)),
+            fig_width=float(d.get("fig_width", 12)),
+            fig_height_per_row=float(d.get("fig_height_per_row", 3.2)),
+            dpi=int(d.get("dpi", 150)),
+            formats=tuple(fmts),
+            show_segment_labels=bool(d.get("show_segment_labels", True)),
+            show_glow=bool(d.get("show_glow", True)),
+            line_width_base=float(d.get("line_width_base", 1.0)),
+            line_width_seg=float(d.get("line_width_seg", 2.2)),
+            palette=palette,
+         )
+        
+
+@dataclass(frozen=True)
 class AppConfig:
-    paths:       PathsCfg   = field(default_factory=PathsCfg)
-    segment:     SegmentCfg = field(default_factory=SegmentCfg)
+    paths:         PathsCfg   = field(default_factory=PathsCfg)
+    segment:       SegmentCfg = field(default_factory=SegmentCfg)
     preprocessing: PreprocCfg = field(default_factory=PreprocCfg)
+    plot:          PlotCfg    = field(default_factory=PlotCfg)     # ← NEW
 
     @classmethod
     def from_yaml(cls, yaml_path: str | Path) -> "AppConfig":
@@ -80,14 +122,5 @@ class AppConfig:
             paths=PathsCfg.from_dict(raw.get("paths", {})),
             segment=SegmentCfg.from_dict(raw.get("segment", {})),
             preprocessing=PreprocCfg.from_dict(raw.get("preprocessing", {})),
-        )
-
-    def __repr__(self) -> str:
-        return (
-            f"AppConfig\n"
-            f"  paths.raw_data     = {self.paths.raw_data}\n"
-            f"  paths.output_csv   = {self.paths.output_csv}\n"
-            f"  paths.output_plots = {self.paths.output_plots}\n"
-            f"  segment            = {self.segment}\n"
-            f"  preprocessing      = {self.preprocessing}"
+            plot=PlotCfg.from_dict(raw.get("plot", {})),       # ← NEW
         )
