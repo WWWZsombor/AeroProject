@@ -1,0 +1,18 @@
+[build-system]
+requires      = ["setuptools >= 61", "wheel"]
+build-backend = "setuptools.build_meta"          # ← the only correct value
+
+[project]
+name         = "cda"
+version       = "0.1.0"
+requires-python = ">=3.9"
+dependencies  = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "matplotlib",
+    "pyyaml",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]            # ← tells setuptools the package is under src/

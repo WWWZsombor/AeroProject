@@ -1,0 +1,43 @@
+# ─────────────────────────────────────────────────────────────
+#  AeroProject – single source of truth for every parameter
+#  To re-run a test with different settings, edit ONLY this file.
+# ─────────────────────────────────────────────────────────────
+
+paths:
+  # folder that contains the .json measurement files
+  raw_data:      /Users/wzsombor/Documents/Személyes/Bringa/AeroProject/test/input_file
+  # where per-segment CSVs are written
+  output_csv:    /Users/wzsombor/Documents/Személyes/Bringa/AeroProject/test/input_file/processed
+  # where plots are written
+  output_plots:  /Users/wzsombor/Documents/Személyes/Bringa/AeroProject/test/output
+
+segment:
+  interval_length_sec: 60
+  min_speed:            45
+  max_speed:            55
+  segment_num:          4
+  cost_speed:           0.5
+  cost_power:           0.5
+
+preprocessing:
+  calibrate_accelerometer: false
+  calibrate_altitude:      false
+  speed_correction:        1.0        # multiply every speed value by this
+
+
+
+solver:
+  active: nonlinear_fit          # key into solvers/registry.py
+  params:
+    max_iter: 200
+    tol: 1e-10
+
+cyclist_defaults:
+  mass_kg: 72
+  c_rr: 0.004
+  wheel_radius_m: 0.335
+
+plot:
+  style: 'seaborn-v0_8-whitegrid'
+  dpi: 150
+  formats: ['png', 'svg']
