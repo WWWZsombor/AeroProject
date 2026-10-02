@@ -1,425 +1,641 @@
-# AeroProject – Cyclist CdA Measurement
+# AeroProject – Cyclist CdA Measurement Pipeline
 
-> **Status:** active development · checkpoint v0.1
+> **Status:** active development · **checkpoint v0.2**
 > Python 3.9 · conda · single-config-file driven
 
 AeroProject processes raw cycling-ergometer measurement files (JSON) to
 extract the cyclist's **Coefficient of Drag × Frontal Area (CdA)**.
-The pipeline reads one or more JSON files from a data folder, cleans the
-signal, locates the most consistent speed/power windows, writes per-segment
-CSVs, and renders a cyberpunk-styled overview figure.
+The pipeline reads one or more JSON files, cleans the signal, locates the
+most consistent speed / power windows, groups the per-segment CSVs back into
+per-ride DataFrames, pre-processes them with a physical model, and renders a
+cyberpunk-styled overview figure.
 
 ---
 
 ## Table of Contents
 
-- [Pipeline Overview](#pipeline-overview)
-- [Project Structure](#project-structure)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Usage](#usage)
-- [Module Reference](#module-reference)
-- [Plotting](#plotting)
-- [Development](#development)
-- [Roadmap](#roadmap)
-- [Dependencies](#dependencies)
-- [License](#license)
+- [1 – Pipeline Overview](#1--pipeline-overview)
+- [2 – Project Structure](#2--project-structure)
+- [3 – Installation](#3--installation)
+- [4 – Configuration](#4--configuration)
+- [5 – Usage](#5--usage)
+- [6 – Module Reference](#6--module-reference)
+  - [6.1 `cda.cyclist`](#61-cdacyclist)
+  - [6.2 `cda.physics`](#62-cdaphysics)
+  - [6.3 `cda.preprocessing`](#63-cdapreprocessing)
+  - [6.4 `cda.postprocessing`](#64-cdapostprocessing)
+  - [6.5 `cda.utils.io`](#65-cdautilsio)
+  - [6.6 `cda.pipeline`](#66-cdapipeline)
+- [7 – Preprocessed Output Schema](#7--preprocessed-output-schema)
+- [8 – Plotting](#8--plotting)
+- [9 – Development](#9--development)
+- [10 – Roadmap](#10--roadmap)
+- [11 – Dependencies](#11--dependencies)
+- [12 – License](#12--license)
 
 ---
 
-## Pipeline Overview
+## 1 – Pipeline Overview
 
 ```text
 config/default.yaml
         │
         ▼
-┌─────────────┐
-│   config    │  parse YAML → frozen AppConfig dataclass
-│   loader    │  (paths, segment params, preprocessing flags, plot style)
-└─────┬───────┘
-      │
-      ▼
-┌─────────────┐
-│  glob *.json│  discover every measurement file in paths.raw_data
-│  in raw_dir │  test_id = filename without ".json"
-└─────┬───────┘
-      │
-      ▼  for each JSON file
-┌─────────────┐
-│   io.load   │  open JSON → parse RIDE.XDATA → three DataFrames
-│  ride_json  │  cda_df · ride_df · bcvx_df
-└─────┬───────┘
-      │
-      ▼
-┌─────────────┐
-│ preprocess  │  accelerometer calibration (optional)
-│ (optional)  │  altitude median correction (optional)
-└─────┬───────┘
-      │
-      ▼
-┌─────────────┐
-│    speed    │  speed × speed_correction (from YAML)
-│ correction  │
-└─────┬───────┘
-      │
-      ▼
-┌─────────────┐
-│  Segment    │  find N non-overlapping windows with the
-│  Finder     │  smallest normalised speed + power σ
-│             │  sorted by start time → seg_0 = earliest
-└─────┬───────┘
-      │
-      ▼
-┌─────────────┐
-│   slice +   │  filter cda_df / ride_df / bcvx_df per window
-│  save CSVs  │  → paths.output_csv / {test_id}_{domain}_{idx}.csv
-└─────┬───────┘
-      │
-      ▼  after all files
-┌─────────────┐
-│    plot     │  one row per ride, cyberpunk palette,
-│  segments   │  neon glow, dark background
-│             │  → paths.output_plots / segments.png|svg
-└─────────────┘
+AppConfig ──► CyclistCfg ──► Cyclist (physical parameters)
+        │
+        ▼
+┌────────────────────────────────────────────────────────────┐
+│  STAGE 1 – per JSON file                                   │
+│                                                            │
+│  io.load_ride_json                                         │
+│        │                                                   │
+│        ▼                                                   │
+│  calibration (optional, YAML-gated)                        │
+│        │                                                   │
+│        ▼                                                   │
+│  speed_correction                                          │
+│        │                                                   │
+│        ▼                                                   │
+│  SegmentFinder.find ──► [(t₀,t₁), …]  time-sorted          │
+│        │                                                   │
+│        ▼                                                   │
+│  io.save_segment_csvs + io.save_combined_csvs              │
+│                                                            │
+└──────────────────────┬─────────────────────────────────────┘
+                       │
+                       ▼
+┌────────────────────────────────────────────────────────────┐
+│  STAGE 2 – per test_id, after all JSONs processed          │
+│                                                            │
+│  file_grouping.group_files_by_type(output_csv)             │
+│        │                                                   │
+│        ▼                                                   │
+│  file_grouping.load_and_merge ──► merged DataFrame         │
+│        │                                                   │
+│        ▼                                                   │
+│  preprocess_segment(df, cyclist, dt, cfg)                  │
+│        │                                                   │
+│        ├── butter (v, P, incline, T, p, airspeed)          │
+│        ├── physics.energy (P_kinetic, P_potential)         │
+│        ├── physics.air_density (humidity-corrected ρ)      │
+│        ├── wind estimate (airspeed − groundspeed)          │
+│        │                                                   │
+│        ▼                                                   │
+│  preprocessed CSV → output_preprocessed/                   │
+│                                                            │
+└──────────────────────┬─────────────────────────────────────┘
+                       │
+                       ▼
+┌────────────────────────────────────────────────────────────┐
+│  STAGE 3 – visualisation                                   │
+│                                                            │
+│  plot_segments ──► segments.png / .svg                     │
+│                                                            │
+└──────────────────────┬─────────────────────────────────────┘
+                       │
+                       ▼
+┌────────────────────────────────────────────────────────────┐
+│  FUTURE – cda.solvers (NOT yet implemented)                │
+│                                                            │
+│  input : preprocessed DataFrame + Cyclist                  │
+│  task  : fit CdA (and optionally c_rr)                     │
+│  model : P_residual = ½ρ·CdA·v_rel²·v + noise              │
+└────────────────────────────────────────────────────────────┘
 ```
 
 **Design rule:** every tunable parameter lives in `config/default.yaml`.
-No hard-coded paths, thresholds, or colours exist in the Python source.
+No hard-coded paths, thresholds, masses, or colours exist in the Python source.
 
 ---
 
-## Project Structure
+## 2 – Project Structure
 
 ```text
 AeroProject/
 │
-├── run.py                      # zero-install launcher (no pip install needed)
-├── pyproject.toml              # package metadata + build config
+├── run.py                        # zero-install launcher
+├── pyproject.toml                # package metadata + build config
 ├── .gitignore
-├── README.md                   # ← this file
+├── README.md                     # ← this file
 │
 ├── config/
-│   └── default.yaml            # single source of truth for every parameter
+│   └── default.yaml              # single source of truth
 │
 ├── test/
-│   └── input_file/             # measurement JSON files live here
+│   └── input_file/               # measurement JSON files
 │       ├── ride_01.json
 │       ├── ride_02.json
-│       └── processed/          # per-segment CSVs are written here
+│       └── processed/            # per-segment + combined CSVs
 │
 ├── output/
-│   └── output/                 # segment overview figures (png / svg)
+│   └── output/
+│       ├── segments.png          # overview figure
+│       ├── segments.svg
+│       └── preprocessed/         # clean, solver-ready DataFrames
 │
 ├── scripts/
-│   └── test_load.py            # dev smoke-test (bypasses config if needed)
+│   └── test_load.py              # dev smoke-test
 │
-└── src/
-    └── cda/
+└── src/cda/
+    ├── __init__.py               # version = "0.2.0"
+    │
+    ├── cyclist/                  # NEW (v0.2)
+    │   ├── __init__.py
+    │   └── cyclist.py            # Cyclist dataclass
+    │
+    ├── physics/                  # NEW (v0.2)
+    │   ├── __init__.py
+    │   ├── constants.py          # G, R_DRY, R_VAPOR, poly coeffs
+    │   ├── forces.py             # drag, rolling, gravity
+    │   ├── energy.py             # kinetic, potential power
+    │   ├── air_density.py        # humidity-corrected ρ
+    │   └── equations.py          # assemble_power_balance
+    │
+    ├── preprocessing/
+    │   ├── __init__.py           # updated exports
+    │   ├── calibration.py        # accel · altitude · low-pass
+    │   ├── segment_finder.py     # SegmentFinder · SegmentConfig
+    │   ├── segment_preprocess.py # NEW: preprocess_segment + butter
+    │   └── file_grouping.py      # NEW: group + merge by test_id
+    │
+    ├── postprocessing/
+    │   ├── __init__.py
+    │   └── plotting.py           # cyberpunk segment overview
+    │
+    ├── pipeline/
+    │   ├── __init__.py
+    │   ├── config_loader.py      # AppConfig + CyclistCfg + PreprocCfg
+    │   └── main.py               # 3-stage orchestrator
+    │
+    └── utils/
         ├── __init__.py
-        │
-        ├── utils/
-        │   ├── __init__.py
-        │   └── io.py                   # JSON read · CSV write
-        │
-        ├── preprocessing/
-        │   ├── __init__.py
-        │   ├── calibration.py          # accel · altitude · low-pass
-        │   └── segment_finder.py       # SegmentFinder · SegmentConfig
-        │
-        ├── postprocessing/
-        │   ├── __init__.py
-        │   └── plotting.py             # cyberpunk segment overview
-        │
-        └── pipeline/
-            ├── __init__.py
-            ├── config_loader.py        # YAML → frozen dataclasses
-            └── main.py                 # orchestrator (< 80 lines)
+        └── io.py                 # load_ride_json · save* · combined*
 ```
 
 ---
 
-## Installation
+## 3 – Installation
 
 ### Option A – Editable install (recommended)
 
 ```bash
 cd AeroProject
-conda activate aero_env                 # or create a new env:
-# conda create -n aero_env python=3.9 && conda activate aero_env
+conda activate aero_env
 
 pip install -e . --no-build-isolation
 ```
 
-After this, the package `cda` is importable from anywhere in the shell.
+`--no-build-isolation` avoids a known Python 3.9 + setuptools conflict.
+After this, `import cda` works from any directory.
 
 ### Option B – Zero-install
-
-No install step. The root-level `run.py` injects `src/` into `sys.path`
-automatically. See [Usage](#usage).
-
-### Verify
-
-```bash
-python -c "import cda; print(cda.__version__)"
-# expected: 0.1.0
-```
-
----
-
-## Configuration
-
-Every run is controlled by **one YAML file**. The default location is
-`config/default.yaml`; a different file can be passed as a CLI argument.
-
-### `config/default.yaml`
-
-```yaml
-paths:
-  raw_data:        /absolute/path/to/input_folder
-  output_csv:      /absolute/path/to/processed
-  output_plots:    /absolute/path/to/output
-
-segment:
-  interval_length_sec: 60
-  min_speed:           45
-  max_speed:           55
-  segment_num:         4
-  cost_speed:          0.5
-  cost_power:          0.5
-
-preprocessing:
-  calibrate_accelerometer: false
-  calibrate_altitude:      false
-  speed_correction:        1.0
-
-plot:
-  speed_factor:        1.0          # 1.0 if data is km/h; 3.6 if m/s
-  fig_width:           12
-  fig_height_per_row:  3.2
-  dpi:                 150
-  formats:             ["png", "svg"]
-  show_segment_labels: true
-  show_glow:           true
-  line_width_base:     1.0
-  line_width_seg:      2.2
-  palette:
-    - "#00f0ff"          # seg_0  neon cyan
-    - "#ff2d78"          # seg_1  neon pink
-    - "#ff8c00"          # seg_2  neon orange
-    - "#b026ff"          # seg_3  electric purple
-    - "#39ff14"          # seg_4  neon green  (spare)
-    - "#ffea00"          # seg_5  neon yellow (spare)
-```
-
-### Changing a test configuration
-
-Edit only the YAML. No Python file is touched.
-
-| Goal                          | YAML change                                      |
-|-------------------------------|--------------------------------------------------|
-| Fewer / more segments         | `segment.segment_num: 2`                         |
-| Longer windows                | `segment.interval_length_sec: 120`               |
-| Speed data is in m/s          | `plot.speed_factor: 3.6`                         |
-| Disable glow effect           | `plot.show_glow: false`                          |
-| Swap a colour                 | change the hex value in `plot.palette`           |
-| Add accelerometer calibration | `preprocessing.calibrate_accelerometer: true`    |
-
----
-
-## Usage
-
-All three commands produce the same output.
-
-### A – Module call (after `pip install -e .`)
-
-```bash
-python -m cda.pipeline.main config/default.yaml
-```
-
-### B – Root launcher (no install required)
 
 ```bash
 python run.py config/default.yaml
 ```
 
-### C – Dev smoke-test
+`run.py` injects `src/` into `sys.path` before importing.
+
+### Verify
 
 ```bash
+python -c "import cda; print(cda.__version__)"
+# expected:  0.2.0
+```
+
+---
+
+## 4 – Configuration
+
+All parameters are in `config/default.yaml`. To run a different test, copy the
+file, edit the copy, and point the command at it. No Python file is touched.
+
+### 4.1 Full `default.yaml`
+
+```yaml
+# ───────────────────────────────────────────────────────────────────
+#  AeroProject  ·  checkpoint v0.2
+# ───────────────────────────────────────────────────────────────────
+
+paths:
+  raw_data:              /…/AeroProject/test/input_file
+  output_csv:            /…/AeroProject/test/input_file/processed
+  output_plots:          /…/AeroProject/test/output
+  output_preprocessed:   /…/AeroProject/test/output/preprocessed
+
+# ── physical model of the cyclist + bike ────────────────────────────
+cyclist:
+  body_mass:             72.0        # kg
+  bike_weight:           8.5         # kg
+  wheel_mass:            0.90        # kg  per wheel
+  n_wheels:              2
+  wheel_circumference:   2.095       # m   (700 × 25 c)
+  tyre_crr:              0.004       # –   rolling-resistance coefficient
+  aerodynamic_position:  dropbar     # dropbar | bars | tuck
+
+# ── segment selection ───────────────────────────────────────────────
+segment:
+  interval_length_sec:   60
+  min_speed:             45
+  max_speed:             55
+  segment_num:           4
+  cost_speed:            0.5
+  cost_power:            0.5
+
+# ── preprocessing ───────────────────────────────────────────────────
+preprocessing:
+  calibrate_accelerometer: false
+  calibrate_altitude:      false
+  speed_correction:        1.0
+  butter_cutoff_velocity:  0.01
+  butter_cutoff_power:     0.01
+  butter_cutoff_incline:   0.20
+  butter_cutoff_env:       0.10
+  butter_cutoff_airspeed:  0.01
+  butter_order:            1
+
+# ── plot ────────────────────────────────────────────────────────────
+plot:
+  speed_factor:          1.0
+  fig_width:             12
+  fig_height_per_row:    3.2
+  dpi:                   150
+  formats:               ["png", "svg"]
+  show_segment_labels:   true
+  show_glow:             true
+  line_width_base:       1.0
+  line_width_seg:        2.2
+  palette:
+    - "#00f0ff"          # seg_0  neon cyan
+    - "#ff2d78"          # seg_1  neon pink
+    - "#ff8c00"          # seg_2  neon orange
+    - "#b026ff"          # seg_3  electric purple
+    - "#39ff14"          # seg_4  neon green   (spare)
+    - "#ffea00"          # seg_5  neon yellow  (spare)
+# ───────────────────────────────────────────────────────────────────
+```
+
+### 4.2 Configuration cheatsheet
+
+| Goal                             | YAML key to edit                              |
+|----------------------------------|-----------------------------------------------|
+| Fewer / more segments            | `segment.segment_num`                         |
+| Longer / shorter windows         | `segment.interval_length_sec`                 |
+| Speed data in m/s                | `plot.speed_factor: 3.6`                      |
+| Disable glow                     | `plot.show_glow: false`                       |
+| Swap a segment colour            | change the hex value in `plot.palette`        |
+| Heavier rider                    | `cyclist.body_mass: 78.0`                     |
+| Different tyre CRR               | `cyclist.tyre_crr: 0.006`                     |
+| Enable accelerometer calibration | `preprocessing.calibrate_accelerometer: true` |
+| Change filter aggressiveness     | `preprocessing.butter_cutoff_velocity`        |
+| Different output folder          | `paths.output_preprocessed`                   |
+
+---
+
+## 5 – Usage
+
+All three commands produce the same output.
+
+```bash
+# A – module call  (after pip install -e .)
+python -m cda.pipeline.main config/default.yaml
+
+# B – zero-install
+python run.py config/default.yaml
+
+# C – dev smoke-test
 python scripts/test_load.py
 ```
 
 ### Expected terminal output
 
 ```text
-14:32:01  INFO      cda.pipeline.main   –  starting…
-14:32:01  INFO      AppConfig
-          paths.raw_data      = /…/AeroProject/test/input_file
-          paths.output_csv    = /…/AeroProject/test/input_file/processed
-          paths.output_plots  = /…/AeroProject/test/output
-          segment             = SegmentCfg(interval_length_sec=60.0, …)
-          preprocessing       = PreprocCfg(calibrate_accelerometer=False, …)
-14:32:01  INFO      Found 2 JSON file(s) to process.
+14:32:01  INFO     cda.pipeline.main  v0.2   –  starting …
+14:32:01  INFO     AppConfig
+          paths.raw_data       = /…/AeroProject/test/input_file
+          paths.output_csv     = /…/AeroProject/test/input_file/processed
+          paths.output_plots   = /…/AeroProject/test/output
+          paths.output_preproc = /…/AeroProject/test/output/preprocessed
+          cyclist              = CyclistCfg(body_mass=72.0, …)
+          segment              = SegmentCfg(interval_length_sec=60.0, …)
+          preprocessing        = PreprocCfg(calibrate_accelerometer=False, …)
+14:32:01  INFO     Cyclist
+          body_mass          = 72.0 kg
+          bike_weight        = 8.5 kg
+          total_mass         = 80.5 kg
+          wheel_radius       = 0.3332 m
+          rotational_inertia = 0.0797 kg·m²
+          effective_mass     = 82.3 kg
+          c_rr               = 0.0040
+          position           = dropbar
+14:32:01  INFO     Found 2 JSON file(s).
 14:32:01  INFO      ============================================================
-14:32:01  INFO      Processing    ride_01.json    (test_id = ride_01)
-14:32:01  INFO        loaded   cda=(3200, 6)  ride=(3200, 12)  bcvx=(3200, 15)
-14:32:01  INFO        accelerometer calibration skipped
-14:32:01  INFO        altitude correction skipped
-14:32:01  INFO        speed correction = 1.0 (no change)
-14:32:02  INFO        segments (4, time-sorted):
-14:32:02  INFO          seg_0    [   45.2 –   105.2 s]
-14:32:02  INFO          seg_1    [  123.0 –   183.0 s]
-14:32:02  INFO          seg_2    [  261.4 –   321.4 s]
-14:32:02  INFO          seg_3    [  387.0 –   447.0 s]
-14:32:02  INFO        seg_0    →    …/processed/ride_01_bcvx_0.csv
-14:32:02  INFO        seg_1    →    …/processed/ride_01_bcvx_1.csv
-14:32:02  INFO        seg_2    →    …/processed/ride_01_bcvx_2.csv
-14:32:02  INFO        seg_3    →    …/processed/ride_01_bcvx_3.csv
+14:32:01  INFO     Processing    ride_01.json    (test_id = ride_01)
+14:32:01  INFO       loaded   cda=(3200,6)  ride=(3200,12)  bcvx=(3200,15)
+14:32:01  INFO       accelerometer calibration skipped
+14:32:01  INFO       altitude correction skipped
+14:32:01  INFO       speed correction = 1.0 (no change)
+14:32:02  INFO       segments (4, time-sorted):
+14:32:02  INFO         seg_0     [    45.2 –    105.2 s]
+14:32:02  INFO         seg_1     [   123.0 –    183.0 s]
+14:32:02  INFO         seg_2     [   261.4 –    321.4 s]
+14:32:02  INFO         seg_3     [   387.0 –    447.0 s]
+14:32:02  INFO       seg_0   →   …/processed/ride_01_bcvx_0.csv   (+ combined)
+14:32:02  INFO       seg_1   →   …/processed/ride_01_bcvx_1.csv   (+ combined)
+14:32:02  INFO       seg_2   →   …/processed/ride_01_bcvx_2.csv   (+ combined)
+14:32:02  INFO       seg_3   →   …/processed/ride_01_bcvx_3.csv   (+ combined)
 14:32:02  INFO      ============================================================
-14:32:02  INFO      Processing    ride_02.json    (test_id = ride_02)
+14:32:02  INFO     Processing    ride_02.json    (test_id = ride_02)
           …
+14:32:03  INFO      ============================================================
+14:32:03  INFO     Grouping + preprocessing combined CSVs …
+14:32:03  INFO       ride_01   rows=240   dt=1.000 s
+14:32:03  INFO         →  …/preprocessed/ride_01_preprocessed.csv
+14:32:03  INFO       ride_02   rows=180   dt=1.000 s
+14:32:03  INFO         →  …/preprocessed/ride_02_preprocessed.csv
 plot_segments: saved → ['…/output/segments.png', '…/output/segments.svg']
-14:32:03  INFO      Done.    14 file(s) written in total.
+14:32:03  INFO      Done.     20 file(s) written in total.
 
-14 file(s) written.
-    /…/processed/ride_01_cda_0.csv
-    /…/processed/ride_01_ride_0.csv
-    /…/processed/ride_01_bcvx_0.csv
-    …
-    /…/output/segments.png
-    /…/output/segments.svg
+20 file(s) written.
+     /…/processed/ride_01_cda_0.csv
+     /…/processed/ride_01_ride_0.csv
+     /…/processed/ride_01_bcvx_0.csv
+     /…/processed/ride_01_combined_0.csv
+     …
+     /…/preprocessed/ride_01_preprocessed.csv
+     /…/preprocessed/ride_02_preprocessed.csv
+     /…/output/segments.png
+     /…/output/segments.svg
 ```
 
 ---
 
-## Module Reference
+## 6 – Module Reference
 
-### `cda.utils.io`
+### 6.1 `cda.cyclist`
 
-| Function                                                     | Role                                                        |
-|--------------------------------------------------------------|-------------------------------------------------------------|
-| `load_ride_json(path, test_id)`                              | Open one JSON → `RawRideData(cda_df, ride_df, bcvx_df, …)`  |
-| `save_segment_csvs(cda, ride, bcvx, out_dir, test_id, idx)`  | Write three CSVs                                            |
-| `_process_xdata(xdata)`                                      | Split the flat XDATA list into the three domain DataFrames  |
-| `_get_all_samples(df, name)`                                 | Flatten nested SAMPLES / VALUES into a wide DataFrame       |
+**File:** `src/cda/cyclist/cyclist.py`
 
-**Rule:** this module imports only `json`, `os`, `pandas`.
-It never touches physics, plotting, or config.
+A frozen `@dataclass` carrying every physical parameter of the cyclist + bicycle
+system. Created once from the YAML, passed to physics and (future) solver code.
+Never mutated.
 
-### `cda.preprocessing`
+```python
+from cda.cyclist import Cyclist
 
-#### `calibration.py`
+cyc = Cyclist.from_config_dict(cfg.cyclist.__dict__)
+# or
+cyc = Cyclist(body_mass=75.0, bike_weight=8.0, tyre_crr=0.006)
+```
 
-| Function                                  | Role                                         |
-|-------------------------------------------|----------------------------------------------|
-| `apply_accelerometer_calibration(bcvx_df)`| Linear-fit 3-axis accel, overwrite in-place  |
-| `correct_altitude(bcvx_df, zero_offset)`  | Remove slow median drift from altitude       |
-| `filter_speed_lowpass(df)`                | Low-pass filter on the speed channel         |
+| Attribute              | Type    | Default     | Description                    |
+|------------------------|---------|-------------|--------------------------------|
+| `body_mass`            | `float` | `72.0`      | Rider mass (kg)                |
+| `bike_weight`          | `float` | `8.5`       | Bicycle mass (kg)              |
+| `wheel_mass`           | `float` | `0.90`      | Mass of one wheel (kg)         |
+| `n_wheels`             | `int`   | `2`         | Number of wheels               |
+| `wheel_circumference`  | `float` | `2.095`     | Rolling circumference (m)      |
+| `tyre_crr`             | `float` | `0.004`     | Rolling-resistance coefficient |
+| `aerodynamic_position` | `str`   | `"dropbar"` | `dropbar` · `bars` · `tuck`    |
 
-All functions are pure: DataFrame in → new DataFrame out. They are called
-only when the corresponding YAML flag is `true`.
+| Derived property     | Formula                  | Unit  |
+|----------------------|--------------------------|-------|
+| `total_mass`         | body + bike              | kg    |
+| `wheel_radius`       | C / 2π                   | m     |
+| `rotational_inertia` | n · m_w · r² (thin-ring) | kg·m² |
+| `effective_mass`     | total_mass + I / r²      | kg    |
+| `c_rr`               | alias for `tyre_crr`     | –     |
 
-#### `segment_finder.py`
+`effective_mass` is used for `E_kin = ½ m_eff v²` so that the rotational energy
+of the wheels is accounted for.
 
-| Class / Function                          | Role                                                                                         |
-|-------------------------------------------|----------------------------------------------------------------------------------------------|
-| `SegmentConfig`                           | Dataclass: `interval_length_sec`, `min_speed`, `max_speed`, `segment_num`, `cost_speed`, `cost_power` |
-| `SegmentFinder(cfg).find(bcvx_df)`        | Return `list[(start, stop)]`, time-sorted                                                    |
-| `filter_dataframe_by_time(df, t0, t1, col)` | Slice a DataFrame by time window                                                           |
+### 6.2 `cda.physics`
 
-**Algorithm:**
+**Files:** `constants.py`, `forces.py`, `energy.py`, `air_density.py`, `equations.py`
 
-1. Low-pass filter the speed column.
-2. Slide a window of `interval_length_sec` across the time series.
-3. Keep windows where `avg_speed ∈ [min_speed, max_speed]` and `max_speed_in_window ≤ max_speed`.
-4. Normalise `speed_std` and `power_std` to [0, 1].
-5. Cost = `cost_speed · s_norm + cost_power · p_norm`.
-6. Pick the N cheapest non-overlapping windows.
-7. Sort by start time → `seg_0` is always the earliest.
+Pure-math package. No I/O, no pandas, no plotting. Every function is
+element-wise numpy.
 
-### `cda.postprocessing.plotting`
+#### Constants
 
-| Function                                      | Role                                    |
-|-----------------------------------------------|-----------------------------------------|
-| `plot_segments(results, out_dir, cfg, filename)` | One figure, N rows, one row per ride |
+| Name      | Value     | Description                           |
+|-----------|-----------|---------------------------------------|
+| `G`       | `9.80665` | Standard gravity (m/s²)               |
+| `R_DRY`   | `287.05`  | Gas constant, dry air (J/(kg·K))      |
+| `R_VAPOR` | `461.495` | Gas constant, water vapour (J/(kg·K)) |
 
-**Visual style:**
+#### Forces
 
-- Dark background (`#0d1117`, GitHub-dark).
-- Gaps / pre-first / post-last: dark grey (`#5a5a5a`).
-- Segment *k* (0-indexed, time-sorted): `palette[k]` from the YAML.
-- Neon glow: each segment drawn twice (wide + transparent halo, then core).
-- Tiny colour key in the top-right corner of each subplot.
-- X-axis in minutes, Y-axis in km/h.
+```text
+F_drag    = ½ · ρ · CdA · v_rel²
+F_rolling = c_rr · m · g · cos(θ)
+F_gravity = m · g · sin(θ)
+```
 
-### `cda.pipeline`
+#### Energy powers
+
+```text
+P_kinetic   = d/dt (½ · m_eff · v²)
+P_potential = d/dt (m · g · h)
+```
+
+#### Air density
+
+Full humidity-corrected density from temperature, pressure, relative humidity.
+Polynomial saturation-pressure model (9th order, °C → mbar → Pa).
+Reference: <https://wahiduddin.net/calc/density_altitude.htm>
+
+#### `assemble_power_balance(df, cyclist, dt, cda_guess)`
+
+Returns a new DataFrame with one column per power component:
+
+| Added column   | Unit | Meaning                                    |
+|----------------|------|--------------------------------------------|
+| `F_drag`       | N    | ½ρ·CdA_guess·v_rel²                        |
+| `F_rolling`    | N    | c_rr·m·g·cosθ                              |
+| `F_gravity`    | N    | m·g·sinθ                                   |
+| `P_aero`       | W    | F_drag · v                                 |
+| `P_rolling`    | W    | F_rolling · v                              |
+| `P_gravity`    | W    | F_gravity · v                              |
+| `P_kinetic`    | W    | dE_kin/dt                                  |
+| `P_potential`  | W    | dE_pot/dt                                  |
+| `P_residual`   | W    | P_measured − P_kin − P_pot − P_rr − P_grav |
+| `P_aero_model` | W    | ½ρ·CdA_guess·v_rel²·v (sanity check)       |
+
+`P_residual` is the column a future solver will fit to extract CdA.
+
+### 6.3 `cda.preprocessing`
+
+#### `calibration.py` (unchanged from v0.1)
+
+| Function                                   | Role                         |
+|--------------------------------------------|------------------------------|
+| `apply_accelerometer_calibration(bcvx_df)` | 3-axis linear fit, overwrite |
+| `correct_altitude(bcvx_df, zero_offset)`   | Remove median drift          |
+| `filter_speed_lowpass(df)`                 | Low-pass on speed            |
+
+All pure: DataFrame in → new DataFrame out. Called only when the YAML flag is `true`.
+
+#### `segment_finder.py` (unchanged from v0.1)
+
+| Class / Function                            | Role                                      |
+|---------------------------------------------|-------------------------------------------|
+| `SegmentConfig`                             | Dataclass: window, speed bounds, costs, N |
+| `SegmentFinder(cfg).find(bcvx_df)`          | → `list[(start, stop)]`, time-sorted      |
+| `filter_dataframe_by_time(df, t0, t1, col)` | Slice by time                             |
+
+**Algorithm:** slide window → filter by speed range → normalise σ → weighted
+cost → pick N cheapest non-overlapping → sort by start time.
+
+#### `segment_preprocess.py` (NEW)
+
+| Function                                   | Role                            |
+|--------------------------------------------|---------------------------------|
+| `_butter(data, cutoff, order, fs)`         | Zero-phase Butterworth low-pass |
+| `preprocess_segment(df, cyclist, dt, cfg)` | Full clean + derive             |
+
+`preprocess_segment` produces, in order:
+
+1. `velocity_smoothed` – butter(0.01) of v in m/s
+2. `power_smoothed` – butter(0.01) of pedal power
+3. `power_kinetic` – d/dt(½ m_eff v²)
+4. `power_potential` – d/dt(m g h)
+5. `incline_rad` – butter(0.20) of incline, converted to radians
+6. `density` – humidity-corrected air density
+7. `airspeed_filtered` – butter(√(2·dp/100/ρ))
+8. `v_wind` – `airspeed_filtered − velocity_smoothed`
+
+#### `file_grouping.py` (NEW)
+
+| Function                      | Role                                               |
+|-------------------------------|----------------------------------------------------|
+| `group_files_by_type(folder)` | Scan `*.csv`, group by `(test_id, domain)`         |
+| `load_and_merge(groups)`      | Concat segments, merge cda + ride + bcvx on `SECS` |
+
+File naming convention (set by `io.save_segment_csvs` / `save_combined_csvs`):
+
+```text
+{test_id}_cda_{idx}.csv
+{test_id}_ride_{idx}.csv
+{test_id}_bcvx_{idx}.csv
+{test_id}_combined_{idx}.csv
+```
+
+### 6.4 `cda.postprocessing`
+
+| Function                                         | Role               |
+|--------------------------------------------------|--------------------|
+| `plot_segments(results, out_dir, cfg, filename)` | One figure, N rows |
+
+Cyberpunk palette, neon glow, dark background. See [8 – Plotting](#8--plotting).
+
+### 6.5 `cda.utils.io`
+
+| Function                                                 | Role                               |
+|----------------------------------------------------------|------------------------------------|
+| `load_ride_json(path, test_id)`                          | JSON → `RawRideData`               |
+| `save_segment_csvs(cda, ride, bcvx, out_dir, tid, idx)`  | 3 separate CSVs                    |
+| `save_combined_csvs(cda, ride, bcvx, out_dir, tid, idx)` | 1 merged CSV                       |
+| `_process_xdata(xdata)`                                  | Split flat XDATA into 3 DataFrames |
+| `_get_all_samples(df, name)`                             | Flatten nested SAMPLES / VALUES    |
+
+**Rule:** `io.py` imports only `json`, `os`, `pandas`. It never touches physics,
+plotting, or config.
+
+### 6.6 `cda.pipeline`
 
 #### `config_loader.py`
 
-| Dataclass     | YAML section                                       |
-|---------------|----------------------------------------------------|
-| `PathsCfg`    | `paths`                                            |
-| `SegmentCfg`  | `segment`                                          |
-| `PreprocCfg`  | `preprocessing`                                    |
-| `PlotCfg`     | `plot` (includes `palette` list)                   |
-| `AppConfig`   | all of the above; loaded by `AppConfig.from_yaml(path)` |
+| Dataclass    | YAML section                                            |
+|--------------|---------------------------------------------------------|
+| `PathsCfg`   | `paths`                                                 |
+| `CyclistCfg` | `cyclist` ← **NEW**                                     |
+| `SegmentCfg` | `segment`                                               |
+| `PreprocCfg` | `preprocessing` (extended with Butterworth params)      |
+| `PlotCfg`    | `plot`                                                  |
+| `AppConfig`  | all of the above; loaded by `AppConfig.from_yaml(path)` |
 
-All dataclasses are **frozen** (immutable). `from_dict` classmethods map
-YAML keys → dataclass fields with defaults.
+All dataclasses are **frozen** (immutable). `from_dict` classmethods map YAML
+keys → dataclass fields with defaults.
 
 #### `main.py`
 
-`main(yaml_path)` is the only orchestration function. It:
+`main(yaml_path)` orchestrates three stages:
 
-1. Reads the YAML → `AppConfig`.
-2. Globs `*.json` in `paths.raw_data`.
-3. For each file: load → clean → speed-correct → segment → write CSVs.
-4. Calls `plot_segments()` once with all results.
-5. Returns the full list of written file paths.
+| Stage | What                                 | Output                                                  |
+|-------|--------------------------------------|---------------------------------------------------------|
+| 1     | JSON → clean → segment → CSVs        | `{tid}_{domain}_{idx}.csv` + `{tid}_combined_{idx}.csv` |
+| 2     | Group → merge → `preprocess_segment` | `{tid}_preprocessed.csv`                                |
+| 3     | `plot_segments`                      | `segments.png` / `.svg`                                 |
 
-The file is under 80 lines. It contains no physics, no matplotlib, no
+Returns `{"preprocessed": {tid: df}, "cyclist": Cyclist, "all_written": [paths]}`.
+
+The file is under 130 lines and contains no physics, no matplotlib, no
 file-path literals.
 
 ---
 
-## Plotting
+## 7 – Preprocessed Output Schema
 
-The segment overview figure is saved to `paths.output_plots` as
-`segments.png` and `segments.svg` (configurable via `plot.formats`).
+Each `{test_id}_preprocessed.csv` contains:
+
+| Column              | Unit  | Source                                  |
+|---------------------|-------|-----------------------------------------|
+| `SECS`              | s     | raw time axis                           |
+| `speed`             | km/h  | raw (after `speed_correction`)          |
+| `v`                 | m/s   | `speed / 3.6`                           |
+| `velocity_smoothed` | m/s   | butter(0.01)                            |
+| `power`             | W     | raw pedal power                         |
+| `power_smoothed`    | W     | butter(0.01)                            |
+| `altitude`          | m     | raw or butter-smoothed                  |
+| `temperature`       | °C    | butter(0.10)                            |
+| `pressure`          | Pa    | butter(0.10)                            |
+| `relative_humidity` | %     | from humidity                           |
+| `density`           | kg/m³ | humidity-corrected                      |
+| `dyn_press`         | Pa    | from `ride_df`                          |
+| `airspeed_filtered` | m/s   | butter(√(2·dp/100/ρ))                   |
+| `v_wind`            | m/s   | `airspeed_filtered − velocity_smoothed` |
+| `incline_angle`     | °     | butter(0.20, order 2)                   |
+| `incline_rad`       | rad   | `deg2rad(incline_angle)`                |
+| `power_kinetic`     | W     | d/dt(½ m_eff v²)                        |
+| `power_potential`   | W     | d/dt(m g h)                             |
+
+This is the solver-ready schema. A future `cda.solvers` module will consume
+these columns plus a `Cyclist` object without needing to re-read any raw data.
+
+---
+
+## 8 – Plotting
+
+The segment overview figure is saved to `paths.output_plots` as `segments.png`
+and `segments.svg`.
 
 Each row shows one ride. The speed trace is colour-coded:
 
 ```text
-time ───────────────────────────────────────────────────────►
-      │  grey  │  ━━ seg_0 ━━  │  grey  │  ━━ seg_1 ━━  │  grey  │ …
-      │        │  neon cyan    │        │  neon pink    │        │
-      └────────┴───────────────┴────────┴───────────────┴────────┘
+time ────────────────────────────────────────────────────────────►
+      │  grey   │   ━━ seg_0 ━━  │  grey  │   ━━ seg_1 ━━  │  grey  │ …
+      │         │   neon cyan    │        │   neon pink    │        │
+      └─────────┴────────────────┴────────┴────────────────┴────────┘
 ```
 
-- No green initial segment. The pre-first-segment region is dark grey.
-- `seg_0` is the earliest window in time (guaranteed by the sort).
-- The colour palette is read from `config/default.yaml` → `plot.palette`.
-- Glow is controlled by `plot.show_glow` (default `true`).
+- No green initial segment. Pre-first-segment region is dark grey.
+- `seg_0` is the earliest window (guaranteed by the time-sort).
+- Neon glow: each segment drawn twice (wide + transparent halo, then core).
+- Tiny colour key in the top-right corner of each subplot.
+- All visual parameters live in `config/default.yaml` → `plot:`.
 
 ---
 
-## Development
-
-### Quick smoke-test
-
-```bash
-python scripts/test_load.py
-```
-
-This script lives in `scripts/` and is **not** part of the importable
-package. It can be edited freely with hard-coded paths for debugging.
+## 9 – Development
 
 ### Adding a new preprocessing step
 
-1. Implement a pure function in `preprocessing/calibration.py` (or a new file in `preprocessing/`).
+1. Implement a pure function in `preprocessing/`.
 2. Export it from `preprocessing/__init__.py`.
 3. Add a flag to `config/default.yaml` under `preprocessing:`.
 4. Add the flag to `PreprocCfg` in `config_loader.py`.
-5. Call it in `_process_one()` in `main.py`, guarded by the flag.
+5. Call it inside `preprocess_segment()`, gated by the flag.
 
 No existing module needs to change.
 
@@ -428,56 +644,49 @@ No existing module needs to change.
 1. Create `solvers/my_solver.py` inheriting `BaseSolver`.
 2. Register it in `solvers/registry.py`.
 3. Add its key to `config/default.yaml` under a new `solver:` section.
-4. Call it in `main.py` after the segmentation step.
+4. Call it in `main.py` Stage 2, after `preprocess_segment`.
+
+### Running tests
+
+```bash
+pytest tests/ -v
+```
 
 ---
 
-## Roadmap
+## 10 – Roadmap
 
 The following are planned and **not yet implemented**:
 
-- [ ] `cda.physics/` – assembled drag / rolling / gravity equations
-- [ ] `cda.cyclist/` – `Cyclist` dataclass (mass, C_rr, wheel radius, posture)
 - [ ] `cda.solvers/` – `BaseSolver` ABC + `LinearRegressionSolver`, `NonlinearFitSolver`, `KalmanFilterSolver`
+- [ ] `cda.solvers/registry.py` – solver name → class factory
 - [ ] `cda.postprocessing/statistics.py` – confidence intervals, R², residuals
-- [ ] `cda.postprocessing/report.py` – optional LaTeX / HTML summary
+- [ ] `cda.postprocessing/report.py` – LaTeX / HTML summary
 - [ ] `tests/` – unit tests mirroring `src/cda/`
 - [ ] `docs/architecture.md` – full dependency-graph and data-flow diagram
 - [ ] CI: GitHub Actions running `pytest` on every push
+- [ ] `cda.cyclist` – add `frontal_area_prior`, `cadence`, `gear_ratio` when power-meter data becomes available
 
 ---
 
-## Dependencies
+## 11 – Dependencies
 
-| Package      | Purpose                                  |
-|--------------|------------------------------------------|
-| `numpy`      | array math, low-pass filter              |
-| `pandas`     | DataFrame I/O, time slicing              |
-| `scipy`      | nonlinear optimisation (future solvers)  |
-| `matplotlib` | segment overview plots                   |
-| `pyyaml`     | config parsing                           |
+| Package      | Purpose                                           |
+|--------------|---------------------------------------------------|
+| `numpy`      | array math, gradient, filtering                   |
+| `pandas`     | DataFrame I/O, time slicing, merge                |
+| `scipy`      | Butterworth filter, future nonlinear optimisation |
+| `matplotlib` | segment overview plots                            |
+| `pyyaml`     | config parsing                                    |
 
 Python ≥ 3.9. Developed and tested with conda environment `aero_env`.
 
-### Configuration cheatsheet
+---
 
-| File                   | What it controls                                                  |
-|------------------------|-------------------------------------------------------------------|
-| `config/default.yaml`  | **Everything.** Paths, segments, preprocessing, plot style.       |
-| `pyproject.toml`       | Package name, version, build system. Rarely edited.               |
-| `run.py`               | Entry point. Contains one `sys.path` line. Never edit.            |
+## 12 – License
 
-To run a completely different test, copy `default.yaml` to
-`config/ride_02_fast.yaml`, edit the copy, and run:
-
-```bash
-python run.py config/ride_02_fast.yaml
-```
-
-The original config is never touched.
+Internal research project. No external distribution intended at this stage.
 
 ---
 
-## License
-
-Internal research project. No external distribution intended at this stage.
+*Checkpoint v0.2 – Cyclist · Physics · Preprocessing. Next: solvers.*

@@ -36,25 +36,11 @@ class SegmentCfg:
 
 
 @dataclass(frozen=True)
-class PreprocCfg:
-    calibrate_accelerometer: bool  = False
-    calibrate_altitude:      bool  = False
-    speed_correction:        float = 1.0
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "PreprocCfg":
-        return cls(
-            calibrate_accelerometer=bool(d.get("calibrate_accelerometer", False)),
-            calibrate_altitude=bool(d.get("calibrate_altitude", False)),
-            speed_correction=float(d.get("speed_correction", 1.0)),
-        )
-
-
-@dataclass(frozen=True)
 class PathsCfg:
-    raw_data:     str = ""
-    output_csv:   str = ""
-    output_plots: str = ""
+    raw_data:            str = ""
+    output_csv:          str = ""
+    output_plots:        str = ""
+    output_preprocessed: str = ""
 
     @classmethod
     def from_dict(cls, d: dict) -> "PathsCfg":
@@ -62,7 +48,8 @@ class PathsCfg:
             raw_data=d.get("raw_data", ""),
             output_csv=d.get("output_csv", ""),
             output_plots=d.get("output_plots", ""),
-        )
+            output_preprocessed=d.get("output_preprocessed", ""),
+          )
 
 
 @dataclass(frozen=True)
@@ -106,12 +93,67 @@ class PlotCfg:
          )
         
 
+
+# ── add these dataclasses ────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class CyclistCfg:
+    body_mass:           float = 72.0
+    bike_weight:         float = 8.5
+    wheel_mass:          float = 0.90
+    n_wheels:            int   = 2
+    wheel_circumference: float = 2.095
+    tyre_crr:            float = 0.004
+    aerodynamic_position: str  = "dropbar"
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CyclistCfg":
+        return cls(
+            body_mass=float(d.get("body_mass", 72.0)),
+            bike_weight=float(d.get("bike_weight", 8.5)),
+            wheel_mass=float(d.get("wheel_mass", 0.90)),
+            n_wheels=int(d.get("n_wheels", 2)),
+            wheel_circumference=float(d.get("wheel_circumference", 2.095)),
+            tyre_crr=float(d.get("tyre_crr", 0.004)),
+            aerodynamic_position=str(d.get("aerodynamic_position", "dropbar")),
+          )
+
+
+@dataclass(frozen=True)
+class PreprocCfg:
+    calibrate_accelerometer: bool  = False
+    calibrate_altitude:      bool  = False
+    speed_correction:        float = 1.0
+    # Butterworth parameters
+    butter_cutoff_velocity:  float = 0.01
+    butter_cutoff_power:     float = 0.01
+    butter_cutoff_incline:   float = 0.20
+    butter_cutoff_env:       float = 0.10
+    butter_cutoff_airspeed:  float = 0.01
+    butter_order:            int   = 1
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PreprocCfg":
+        return cls(
+            calibrate_accelerometer=bool(d.get("calibrate_accelerometer", False)),
+            calibrate_altitude=bool(d.get("calibrate_altitude", False)),
+            speed_correction=float(d.get("speed_correction", 1.0)),
+            butter_cutoff_velocity=float(d.get("butter_cutoff_velocity", 0.01)),
+            butter_cutoff_power=float(d.get("butter_cutoff_power", 0.01)),
+            butter_cutoff_incline=float(d.get("butter_cutoff_incline", 0.20)),
+            butter_cutoff_env=float(d.get("butter_cutoff_env", 0.10)),
+            butter_cutoff_airspeed=float(d.get("butter_cutoff_airspeed", 0.01)),
+            butter_order=int(d.get("butter_order", 1)),
+          )
+
+
 @dataclass(frozen=True)
 class AppConfig:
-    paths:         PathsCfg   = field(default_factory=PathsCfg)
-    segment:       SegmentCfg = field(default_factory=SegmentCfg)
-    preprocessing: PreprocCfg = field(default_factory=PreprocCfg)
-    plot:          PlotCfg    = field(default_factory=PlotCfg)     # ← NEW
+    paths:         PathsCfg    = field(default_factory=PathsCfg)
+    cyclist:       CyclistCfg  = field(default_factory=CyclistCfg)    # NEW
+    segment:       SegmentCfg  = field(default_factory=SegmentCfg)
+    preprocessing: PreprocCfg  = field(default_factory=PreprocCfg)
+    plot:          PlotCfg     = field(default_factory=PlotCfg)
 
     @classmethod
     def from_yaml(cls, yaml_path: str | Path) -> "AppConfig":
@@ -120,7 +162,8 @@ class AppConfig:
 
         return cls(
             paths=PathsCfg.from_dict(raw.get("paths", {})),
+            cyclist=CyclistCfg.from_dict(raw.get("cyclist", {})),      # NEW
             segment=SegmentCfg.from_dict(raw.get("segment", {})),
             preprocessing=PreprocCfg.from_dict(raw.get("preprocessing", {})),
-            plot=PlotCfg.from_dict(raw.get("plot", {})),       # ← NEW
-        )
+            plot=PlotCfg.from_dict(raw.get("plot", {})),
+          )

@@ -134,3 +134,33 @@ def _get_all_samples(df: pd.DataFrame, name: str) -> pd.DataFrame:
     return pd.concat(result_dfs, ignore_index=True)
 
 
+def save_combined_csvs(
+    cda_df:     pd.DataFrame,
+    ride_df:    pd.DataFrame,
+    bcvx_df:    pd.DataFrame,
+    out_dir:    str,
+    test_id:    str,
+    segment_idx: int,
+) -> str:
+    """
+    Merge the three domain DataFrames on ``SECS`` and write a single
+    CSV that contains every column.  This is the file that
+    ``preprocess_segment`` consumes.
+
+    Returns the path to the written file.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+
+     # outer merge on time
+    merged = cda_df.merge(ride_df, on="SECS", how="outer",
+                          suffixes=("_cda", "_ride"))
+    merged = merged.merge(bcvx_df, on="SECS", how="outer",
+                          suffixes=("_cda", "_bcvx"))
+    merged = merged.sort_values("SECS").reset_index(drop=True)
+
+    fname = f"{test_id}_combined_{segment_idx}.csv"
+    path  = os.path.join(out_dir, fname)
+    merged.to_csv(path, index=False)
+    return path
+
+

@@ -1,58 +1,60 @@
-# ─────────────────────────────────────────────────────────────
-#  AeroProject – single source of truth for every parameter
-#  To re-run a test with different settings, edit ONLY this file.
-# ─────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
+#  AeroProject – single source of truth   ·  checkpoint v0.2
+# ───────────────────────────────────────────────────────────────────
 
 paths:
-  # folder that contains the .json measurement files
-  raw_data:      /Users/wzsombor/Documents/Személyes/Bringa/AeroProject/test/input_file
-  # where per-segment CSVs are written
-  output_csv:    /Users/wzsombor/Documents/Személyes/Bringa/AeroProject/test/input_file/processed
-  # where plots are written
-  output_plots:  /Users/wzsombor/Documents/Személyes/Bringa/AeroProject/test/output
+  raw_data:         /Users/wzsombor/Documents/Személyes/Bringa/AeroProject/test/input_file
+  output_csv:       /Users/wzsombor/Documents/Személyes/Bringa/AeroProject/test/input_file/processed
+  output_plots:     /Users/wzsombor/Documents/Személyes/Bringa/AeroProject/test/output
+  output_preprocessed: /Users/wzsombor/Documents/Személyes/Bringa/AeroProject/test/output/preprocessed
 
+# ── cyclist (all physical parameters live here) ─────────────────────
+cyclist:
+  body_mass:           72.0       # kg
+  bike_weight:         8.5        # kg
+  wheel_mass:          0.90       # kg  (per wheel)
+  n_wheels:            2
+  wheel_circumference: 2.095      # m   (700 × 25 c ≈ 2.095 m)
+  tyre_crr:            0.004      # –   (dimensionless rolling-resistance coeff.)
+  aerodynamic_position: dropbar   # dropbar | bars | tuck
+
+# ── segment selection ───────────────────────────────────────────────
 segment:
   interval_length_sec: 60
-  min_speed:            45
-  max_speed:            55
-  segment_num:          4
-  cost_speed:           0.5
-  cost_power:           0.5
+  min_speed:               45
+  max_speed:               55
+  segment_num:             4
+  cost_speed:              0.5
+  cost_power:              0.5
 
+# ── preprocessing (JSON-level cleaning + segment-level filtering) ────
 preprocessing:
   calibrate_accelerometer: false
   calibrate_altitude:      false
-  speed_correction:        1.0        # multiply every speed value by this
+  speed_correction:           1.0
+  butter_cutoff_velocity:     0.01
+  butter_cutoff_power:        0.01
+  butter_cutoff_incline:      0.20
+  butter_cutoff_env:          0.10
+  butter_cutoff_airspeed:     0.01
+  butter_order:               1
 
+# ── plot ────────────────────────────────────────────────────────────
 plot:
-  speed_factor:          1.0
-  fig_width:             12
-  fig_height_per_row:    3.2
-  dpi:                   150
-  formats:               ["png", "svg"]
+  speed_factor:            1.0
+  fig_width:              12
+  fig_height_per_row:     3.2
+  dpi:                    150
+  formats:                ["png", "svg"]
   show_segment_labels:   true
-  show_glow:             true          # ← new: neon glow under each segment
-  line_width_base:       1.0
-  line_width_seg:        2.2
-   # cyberpunk palette – one colour per segment, in time order
+  show_glow:             true
+  line_width_base:        1.0
+  line_width_seg:         2.2
   palette:
-    - "#00f0ff"       # 0  neon cyan
-    - "#ff2d78"       # 1  neon pink
-    - "#ff8c00"       # 2  neon orange
-    - "#b026ff"       # 3  electric purple
-    - "#39ff14"       # 4  neon green   (spare, if segment_num ≥ 5)
-    - "#ffea00"       # 5  neon yellow  (spare)
-# ─────────────────────────────────────────────────────────────
-
-
-
-solver:
-  active: nonlinear_fit          # key into solvers/registry.py
-  params:
-    max_iter: 200
-    tol: 1e-10
-
-cyclist_defaults:
-  mass_kg: 72
-  c_rr: 0.004
-  wheel_radius_m: 0.335
+     - "#00f0ff"
+     - "#ff2d78"
+     - "#ff8c00"
+     - "#b026ff"
+     - "#39ff14"
+     - "#ffea00"
+# ───────────────────────────────────────────────────────────────────
