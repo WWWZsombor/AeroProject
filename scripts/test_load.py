@@ -20,7 +20,5 @@ if __name__ == "__main__":
     yaml = os.path.join(
         os.path.dirname(__file__), "..", "config", "default.yaml"
      )
-    written = main(yaml_path=yaml)
-    print(f"\n{len(written)} file(s) written.")
-    for p in written:
-        print(f"  {p}")
+    result = main(yaml_path=yaml)
+    print(f"\n{len(result.get('all_written', []))} file(s) written.")

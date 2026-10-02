@@ -7,7 +7,9 @@ Each function is *pure*: DataFrame in → DataFrame out.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
+from scipy.signal import butter, filtfilt
 
 
 # ── altitude correction ──────────────────────────────────────────────
@@ -17,15 +19,22 @@ def correct_altitude(
     zero_offset: float = 0.0,
 ) -> pd.DataFrame:
     """
-    Remove a slow-drifting median offset from the altitude channel.
+    Remove the slow drift from the ``altitude`` channel (m): the start is
+    shifted to *zero_offset* and the start-to-end drift is removed linearly
+    over the travelled distance (see :func:`_median_offset`).
     Pure: returns a new DataFrame, never mutates the caller's copy.
     """
     bcvx_df = bcvx_df.copy()
-    bcvx_df["altitude"] = bcvx_df["altitude"] - _median_offset(bcvx_df, zero_offset)
+    corrected = _median_offset(bcvx_df, zero_offset)
+    bcvx_df["altitude"] = corrected["corrected_altitude"].to_numpy()
     return bcvx_df
 
 
-def _median_offset(df: pd.DataFrame, zero_offset: float = 0.0, n_points: int = 20) -> pd.DataFrame:
+def _median_offset(
+    df: pd.DataFrame,
+    zero_offset: float = 0.0,
+    n_points: int = 20,
+) -> pd.DataFrame:
     """
     Corrects altitude drift in cycling data using start/end medians and applies zero-offset shift.
     Ensures constant altitude when KM is not changing.
@@ -88,10 +97,6 @@ def _median_offset(df: pd.DataFrame, zero_offset: float = 0.0, n_points: int = 2
 
 
 # ── speed low-pass (used inside SegmentFinder) ──────────────────────
-
-import pandas as pd
-import numpy as np
-from scipy.signal import butter, filtfilt
 
 def filter_speed_lowpass(df, speed_col='speed', cutoff=0.1, fs=4, order=1):
     """

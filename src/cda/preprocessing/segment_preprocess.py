@@ -2,54 +2,42 @@
 """
 cda.preprocessing.segment_preprocess
 ====================================
-Take a raw concatenated segment DataFrame and produce a clean,
-solver-ready DataFrame with:
+Take ONE segment DataFrame (4 Hz, gap-free, from ``combined`` CSV) and
+produce a clean, solver-ready DataFrame with:
 
   • smoothed velocity / power / incline
   • humidity-corrected air density
   • airspeed from dynamic pressure
-  • estimated wind
+  • estimated wind  (headwind component, + = headwind)
   • kinetic + potential power columns
 
 The function is **pure**: it returns a new DataFrame;
 it never mutates the caller's copy.
+
+Call it once per segment: filtering and differentiating across the time
+gap between two segments would create artefacts.
+
+Conventions
+-----------
+* ``speed``  is BCVX ground speed in km/h  → converted once to ``v`` (m/s).
+* ``dyn_press`` is the RideData ``airpressure`` channel: dynamic pressure
+  in units of 0.01 Pa (hence the ``/ 100`` below).
+* The pitot airspeed is calibrated per setup:
+  ``v_air = scale · v_air_raw + offset`` (see ``airspeed_calibration``).
+* ``v_wind`` = ``airspeed − ground speed`` = headwind component (m/s),
+  positive for a headwind.  The relative air speed is ``v + v_wind``.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from scipy.signal import butter, filtfilt
 
 from ..cyclist.cyclist import Cyclist
 from ..physics.constants import G
 from ..physics.energy    import kinetic_power, potential_power
-from ..physics.air_density import calculate_air_density
-
-
-# ── Butterworth helper ───────────────────────────────────────────────
-
-def _butter(
-    data:    np.ndarray | pd.Series,
-    cutoff:  float = 0.01,     # normalised 0-1  (1 = Nyquist)
-    order:   int   = 1,
-    fs:      float = 1.0,      # sampling rate  Hz
-) -> np.ndarray:
-    """
-    Zero-phase Butterworth low-pass filter.
-    Falls back to the original signal if it is too short.
-    """
-    arr = np.asarray(data, dtype=np.float64)
-    n   = len(arr)
-    nyq = fs / 2.0
-
-     # guard: need at least (order+1) samples for filtfilt
-    if n <= 2 * order + 1:
-        return arr
-
-    wn = np.clip(cutoff, 1e-6, 0.999)
-    b, a = butter(order, wn, btype="low", fs=fs)
-    return filtfilt(b, a, arr)
+from .airspeed_calibration import AirspeedCalibration
+from .signals import _butter, air_state
 
 
 # ── main entry point ─────────────────────────────────────────────────
@@ -59,6 +47,8 @@ def preprocess_segment(
     cyclist:     Cyclist,
     dt:          float    = 1.0,
     cfg:         "PreprocCfg" | None = None,
+    calibration: "AirspeedCalibration" | None = None,
+    wind_enabled: bool    = True,
 ) -> pd.DataFrame:
     """
     Clean a concatenated multi-segment DataFrame and add all derived
@@ -66,20 +56,27 @@ def preprocess_segment(
 
     Parameters
     ----------
-    df      : raw DataFrame from ``group_and_merge``.
+    df      : ONE segment from ``load_segments`` (needs ``speed`` km/h,
+              ``power``; optional ``altitude``, ``temperature``,
+              ``pressure``, ``humidity``, ``dyn_press``).
     cyclist : the Cyclist dataclass.
-    dt      : mean time step (s).  Auto-estimated from ``SECS`` if ≤ 0.
+    dt      : time step (s).  Auto-estimated from ``SECS`` if ≤ 0.
     cfg     : optional ``PreprocCfg`` for Butterworth parameters.
               If *None*, sensible defaults are used.
+    calibration : airspeed calibration of THIS setup (scale / offset);
+              identity if *None*.
+    wind_enabled : if False, ``v_wind`` is forced to 0 (no-wind run).
 
     Returns
     -------
     pd.DataFrame  – new, with smoothed + derived columns.
     """
     df = df.copy().reset_index(drop=True)
-    fs = 1.0 / dt if dt > 0 else 1.0
+    if dt <= 0:
+        dt = float(df["SECS"].diff().median())
+    fs = 1.0 / dt
 
-     # pull cutoffs from cfg or use defaults
+     # pull cutoffs (Hz) from cfg or use defaults
     cut_v   = 0.01
     cut_p   = 0.01
     cut_inc = 0.20
@@ -133,52 +130,39 @@ def preprocess_segment(
     if "incline_rad" not in df.columns:
         df["incline_rad"] = np.deg2rad(df["incline_angle"])
 
-     # ── 5  air density (humidity-corrected) ───────────────────────
-    if "temperature" in df.columns:
-        df["temperature"] = _butter(df["temperature"],
-                                    cutoff=cut_env, order=b_order, fs=fs)
-    if "pressure" not in df.columns and "airpressure" in df.columns:
-        df["pressure"] = df["airpressure"]
-    if "pressure" in df.columns:
-        df["pressure"] = _butter(df["pressure"],
-                                 cutoff=cut_env, order=b_order, fs=fs)
-
+     # ── 5  air density (humidity-corrected) + raw pitot airspeed ──
+    rho, v_air_raw = air_state(df, fs, cut_env=cut_env, order=b_order)
+    df["temperature"] = _butter(df["temperature"], cutoff=cut_env,
+                                order=b_order, fs=fs)
+    df["pressure"]    = _butter(df["pressure"], cutoff=cut_env,
+                                order=b_order, fs=fs)
     if "humidity" in df.columns:
         df["relative_humidity"] = df["humidity"]
     elif "relative_humidity" not in df.columns:
         df["relative_humidity"] = 50.0
+    df["density"] = rho
 
-    if "density" not in df.columns:
-        df["density"] = calculate_air_density(
-            df["temperature"].to_numpy(),
-            df["pressure"].to_numpy(),
-            df["relative_humidity"].to_numpy(),
+     # ── 6  airspeed: calibrate, then low-pass ─────────────────────
+     #    v_air = scale · v_air_raw + offset   (per setup, see
+     #    ``airspeed_calibration``); identity if no calibration is given.
+    if "dyn_press" in df.columns:
+        cal = calibration if calibration is not None else AirspeedCalibration()
+        df["airspeed_raw"]          = v_air_raw
+        df["airspeed_from_pressure"] = cal.apply(v_air_raw)
+        df["airspeed_filtered"] = _butter(
+            df["airspeed_from_pressure"], cutoff=cut_as, order=b_order, fs=fs,
         )
+    else:
+        df["airspeed_filtered"] = df["velocity_smoothed"].copy()
 
-     # ── 6  airspeed from dynamic pressure ─────────────────────────
-    if "airspeed_filtered" not in df.columns:
-        if "dyn_press" in df.columns:
-            rho_safe = df["density"].clip(lower=0.1).to_numpy()
-            df["airspeed_from_pressure"] = (
-                np.sqrt(2.0 * df["dyn_press"].to_numpy() / 100.0 / rho_safe)
-            )
-            df["airspeed_filtered"] = _butter(
-                df["airspeed_from_pressure"],
-                cutoff=cut_as, order=b_order, fs=fs,
-            )
-        else:
-            df["airspeed_filtered"] = df["velocity_smoothed"].copy()
-
-     # ── 7  wind estimate ──────────────────────────────────────────
-    if "wind_estimated" not in df.columns:
-        df["wind_estimated"] = (
-            df["airspeed_filtered"] - df["velocity_smoothed"]
-        )
-    if "v_wind" not in df.columns:
-        df["v_wind"] = df.get(
-            "wind",
-            df.get("wind_estimated", pd.Series(np.zeros(len(df)))),
-        )
-    df["v_wind"] = df["v_wind"].fillna(0.0)
+     # ── 7  wind estimate (headwind component, + = headwind) ───────
+     # Derived from the calibrated airspeed sensor; device-computed wind
+     # columns are ignored.  ``wind_enabled=False`` (the velodrome
+     # "no_wind" run) forces v_wind = 0.
+    df["wind_estimated"] = df["airspeed_filtered"] - df["velocity_smoothed"]
+    if wind_enabled:
+        df["v_wind"] = df["wind_estimated"].fillna(0.0)
+    else:
+        df["v_wind"] = 0.0
 
     return df

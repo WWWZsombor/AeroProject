@@ -1,9 +1,9 @@
-# src/cda/io.py
+# src/cda/utils/io.py
 """
-cda.io
-======
+cda.utils.io
+============
 Read one JSON measurement file → RawRideData.
-Write the three segment CSVs.
+Write the per-domain segment CSVs and the combined (ride + bcvx) CSV.
 No physics, no plotting, no segment-finding.
 """
 
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 
 import pandas as pd
@@ -134,33 +135,69 @@ def _get_all_samples(df: pd.DataFrame, name: str) -> pd.DataFrame:
     return pd.concat(result_dfs, ignore_index=True)
 
 
+def merge_ride_bcvx(
+    ride_df: pd.DataFrame,
+    bcvx_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Merge the two 4 Hz domains of one segment onto a single time grid.
+
+    Both domains are sampled at the same ``SECS`` stamps, so an inner join
+    produces a gap-free frame (no NaN rows).  The 1 Hz ``CDAData`` domain
+    (device-computed CdA and friends) is deliberately **not** merged.
+
+    Column rules for names present in both domains
+    (``KM``, ``temperature``, ``power``, ``cadence``, gears, ``speed``):
+
+    * the RideData column wins, because RideData carries SI units;
+    * except ``speed``: the BCVX column (km/h) is kept as ``speed`` – the
+      unit used by the segment finder and the preprocessing step – and the
+      RideData column (m/s) is kept as ``speed_ride``.
+
+    Returns a new DataFrame sorted by ``SECS``.
+    """
+    ride = ride_df.rename(columns={"speed": "speed_ride"})
+    extra = [c for c in bcvx_df.columns
+             if c == "SECS" or c == "speed" or c not in ride.columns]
+    merged = ride.merge(bcvx_df[extra], on="SECS", how="inner")
+    return merged.sort_values("SECS").reset_index(drop=True)
+
+
 def save_combined_csvs(
-    cda_df:     pd.DataFrame,
-    ride_df:    pd.DataFrame,
-    bcvx_df:    pd.DataFrame,
-    out_dir:    str,
-    test_id:    str,
+    ride_df:     pd.DataFrame,
+    bcvx_df:     pd.DataFrame,
+    out_dir:     str,
+    test_id:     str,
     segment_idx: int,
 ) -> str:
     """
-    Merge the three domain DataFrames on ``SECS`` and write a single
-    CSV that contains every column.  This is the file that
+    Merge RideData + BCVX of one segment (see :func:`merge_ride_bcvx`)
+    and write ``{test_id}_combined_{idx}.csv``.  This is the file that
     ``preprocess_segment`` consumes.
 
     Returns the path to the written file.
     """
     os.makedirs(out_dir, exist_ok=True)
-
-     # outer merge on time
-    merged = cda_df.merge(ride_df, on="SECS", how="outer",
-                          suffixes=("_cda", "_ride"))
-    merged = merged.merge(bcvx_df, on="SECS", how="outer",
-                          suffixes=("_cda", "_bcvx"))
-    merged = merged.sort_values("SECS").reset_index(drop=True)
-
-    fname = f"{test_id}_combined_{segment_idx}.csv"
-    path  = os.path.join(out_dir, fname)
+    merged = merge_ride_bcvx(ride_df, bcvx_df)
+    path = os.path.join(out_dir, f"{test_id}_combined_{segment_idx}.csv")
     merged.to_csv(path, index=False)
     return path
 
 
+def remove_segment_csvs(out_dir: str, test_id: str) -> int:
+    """
+    Delete earlier ``{test_id}_{cda|ride|bcvx|combined}_{idx}.csv`` files
+    so a re-run with fewer segments leaves no stale files behind.
+    Returns the number of files removed.
+    """
+    if not os.path.isdir(out_dir):
+        return 0
+    pattern = re.compile(
+        rf"^{re.escape(test_id)}_(cda|ride|bcvx|combined)_\d+\.csv$"
+    )
+    removed = 0
+    for name in os.listdir(out_dir):
+        if pattern.match(name):
+            os.remove(os.path.join(out_dir, name))
+            removed += 1
+    return removed

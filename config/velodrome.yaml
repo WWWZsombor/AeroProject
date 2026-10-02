@@ -1,0 +1,23 @@
+# ───────────────────────────────────────────────────────────────────
+#  Velodrome test  –  steady-speed runs on a track
+#  Everything not listed here is inherited from default.yaml.
+# ───────────────────────────────────────────────────────────────────
+extends: default.yaml
+
+mode: velodrome
+
+velodrome:
+  wind_runs:              [no_wind, with_wind]   # solve with and without the pitot wind
+  speed_source:           sensor                 # sensor | wheel | both  (cadence × gear × wheel).
+                                                 # 60/15 matches the steady segments (ratio ≈ 4.00), but in
+                                                 # some segments wheel speed deviates 2–4 % from the sensor:
+                                                 # check the log warning before using wheel / both
+  chainring_teeth:        60
+  cog_teeth:              15
+  yaw_rate_threshold_dps: 15.0
+  bend_handling:          exclude                # solve on the straights only
+
+segment:
+  interval_length_sec: 60
+  min_speed:           45
+  max_speed:           55

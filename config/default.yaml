@@ -1,12 +1,21 @@
 # ───────────────────────────────────────────────────────────────────
-#  AeroProject – single source of truth   ·  checkpoint v0.2
+#  AeroProject – single source of truth   ·  checkpoint v0.3
+#
+#  This is the full reference config.  config/velodrome.yaml and
+#  config/field.yaml `extends:` it and only list what differs.
+#  Sections marked [step N] are read now but acted on from that step.
+#  (field.incline_source is not used yet.)
 # ───────────────────────────────────────────────────────────────────
 
-paths:
-  raw_data:         /Users/wzsombor/Documents/Személyes/Bringa/AeroProject/test/input_file
-  output_csv:       /Users/wzsombor/Documents/Személyes/Bringa/AeroProject/test/input_file/processed
-  output_plots:     /Users/wzsombor/Documents/Személyes/Bringa/AeroProject/test/output
-  output_preprocessed: /Users/wzsombor/Documents/Személyes/Bringa/AeroProject/test/output/preprocessed
+# ── test protocol ───────────────────────────────────────────────────
+mode: velodrome                     # velodrome | field
+
+paths:                              # relative paths are resolved from the project root
+  raw_data:            test/input_file
+  output_csv:          test/input_file/processed
+  output_plots:        test/output
+  output_preprocessed: test/output/preprocessed
+  output_report:       test/output/report
 
 # ── cyclist (all physical parameters live here) ─────────────────────
 cyclist:
@@ -29,15 +38,83 @@ segment:
 
 # ── preprocessing (JSON-level cleaning + segment-level filtering) ────
 preprocessing:
-  calibrate_accelerometer: false
   calibrate_altitude:      false
   speed_correction:           1.0
+  # Butterworth cut-off frequencies in Hz (fs = 4 Hz for Notio data)
   butter_cutoff_velocity:     0.01
   butter_cutoff_power:        0.01
   butter_cutoff_incline:      0.20
   butter_cutoff_env:          0.10
   butter_cutoff_airspeed:     0.01
   butter_order:               1
+
+# ── pitot airspeed calibration – fitted PER SETUP ───────────────────
+# The flow at the sensor changes with rider position and equipment, so the
+# gain is fitted separately for every measurement file (= one setup):
+#   v_air = scale · v_raw + offset,  fitted so that on steady straights
+#   v_air = ground speed (no-wind assumption).  Result is logged and saved
+#   as <test_id>_airspeed_calibration.json next to the preprocessed CSVs.
+airspeed_calibration:
+  method:       auto           # auto (fit per setup) | none (identity)
+  fit:          scale          # scale | scale_offset  (offset needs a wide speed range)
+  scope:        test           # test (one fit per file) | segment (one per segment)
+  smoothing_hz: 0.20
+  min_speed:    8.0            # m/s  – fit only above this speed
+  max_accel:    0.10           # m/s² – fit only on steady speed
+  min_points:   40
+  min_range:    3.0            # m/s  – steady-speed range needed to fit an offset
+  overrides: {}                # manual values win over the fit, e.g.
+  #  A-Baseline: {scale: 1.03, offset: 0.0}
+
+# ── velodrome mode  (used when mode: velodrome) ─────────────────────
+velodrome:
+  wind_runs:              [no_wind, with_wind]   # one full run per entry
+  speed_source:           sensor                 # sensor | wheel | both
+  chainring_teeth:        60                     # fixed gear – placeholder, set yours
+  cog_teeth:              15                     # (test rides: ratio ≈ 4.04–4.08)
+  yaw_rate_column:        gyrZ                   # vertical-axis gyro (deg/s)
+  yaw_rate_threshold_dps: 15.0                   # |yaw rate| above this = bend
+  yaw_smoothing_sec:      1.0
+  min_straight_sec:       3.0
+  bend_handling:          exclude                # exclude | correct | keep
+
+# ── field mode  (used when mode: field) ─────────────────────────────  
+field:
+  wind_source:            airspeed               # airspeed | none
+  incline_source:         altitude               # altitude | imu | none
+
+# ── solvers (CdA only) ──────────────────────────────────────────────  [step 3]
+solver:
+  enabled:      [ols, chung, kalman, gp]
+  cda_initial:  0.30                # m²
+  cda_bounds:   [0.05, 1.00]        # m²
+  options:                          # per-solver hyper-parameters (finalised in step 3)
+    kalman: {process_noise: 1.0e-8, measurement_noise_w: 10.0}
+    gp:     {length_scale_sec: 20.0, noise_std_w: 10.0}
+
+# ── uncertainty ─────────────────────────────────────────────────────  [step 4]
+uncertainty:
+  confidence_level:      0.95
+  analytic_ci:           true
+  bootstrap:             true
+  bootstrap_method:      block      # block | residual
+  bootstrap_block_sec:   5.0
+  bootstrap_samples:     1000
+  monte_carlo:           true       # perturb sensor inputs with the noise below
+  monte_carlo_samples:   1000
+  noise_speed_std:       0.05       # m/s
+  noise_power_rel_std:   0.02       # fraction of power
+  noise_density_rel_std: 0.005      # fraction of air density
+  noise_airspeed_std:    0.10       # m/s
+  seed:                  42
+
+# ── report ──────────────────────────────────────────────────────────  [step 5]
+report:
+  enabled:        true
+  formats:        [html, pdf]
+  title:          "CdA estimation report"
+  include_config: true
+  figure_dpi:     150
 
 # ── plot ────────────────────────────────────────────────────────────
 plot:

@@ -1,6 +1,6 @@
 # AeroProject – Cyclist CdA Measurement Pipeline
 
-> **Status:** active development · **checkpoint v0.2**
+> **Status:** active development · **checkpoint v0.4**
 > Python 3.9 · conda · single-config-file driven
 
 AeroProject processes raw cycling-ergometer measurement files (JSON) to
@@ -70,10 +70,10 @@ AppConfig ──► CyclistCfg ──► Cyclist (physical parameters)
 │  file_grouping.group_files_by_type(output_csv)             │
 │        │                                                   │
 │        ▼                                                   │
-│  file_grouping.load_and_merge ──► merged DataFrame         │
+│  file_grouping.load_segments ──► [segment DataFrames]      │
 │        │                                                   │
 │        ▼                                                   │
-│  preprocess_segment(df, cyclist, dt, cfg)                  │
+│  preprocess_segment(seg_df, cyclist, dt, cfg)  per segment │
 │        │                                                   │
 │        ├── butter (v, P, incline, T, p, airspeed)          │
 │        ├── physics.energy (P_kinetic, P_potential)         │
@@ -119,7 +119,9 @@ AeroProject/
 ├── README.md                     # ← this file
 │
 ├── config/
-│   └── default.yaml              # single source of truth
+│   ├── default.yaml              # full reference config (all sections)
+│   ├── velodrome.yaml            # extends default · mode: velodrome
+│   └── field.yaml                # extends default · mode: field
 │
 ├── test/
 │   └── input_file/               # measurement JSON files
@@ -244,7 +246,6 @@ segment:
 
 # ── preprocessing ───────────────────────────────────────────────────
 preprocessing:
-  calibrate_accelerometer: false
   calibrate_altitude:      false
   speed_correction:        1.0
   butter_cutoff_velocity:  0.01
@@ -286,9 +287,30 @@ plot:
 | Swap a segment colour            | change the hex value in `plot.palette`        |
 | Heavier rider                    | `cyclist.body_mass: 78.0`                     |
 | Different tyre CRR               | `cyclist.tyre_crr: 0.006`                     |
-| Enable accelerometer calibration | `preprocessing.calibrate_accelerometer: true` |
 | Change filter aggressiveness     | `preprocessing.butter_cutoff_velocity`        |
 | Different output folder          | `paths.output_preprocessed`                   |
+
+---
+
+### 4.3 Test mode and new sections (v0.3)
+
+Choose the protocol with `mode: velodrome | field`, or simply point the command at
+`config/velodrome.yaml` / `config/field.yaml`. These files use `extends: default.yaml`
+(deep-merged over the parent), so they list only what differs.
+
+| Section       | Purpose                                                                 | Acted on from |
+|---------------|-------------------------------------------------------------------------|---------------|
+| `velodrome`   | wind runs (`no_wind`/`with_wind`), speed source, fixed gear, bend detection/handling | **now (step 2)** |
+| `field`       | wind source (now); incline source (not yet used)                        | step 2        |
+| `airspeed_calibration` | per-setup pitot calibration `v_air = scale·v_raw + offset` | **now (step 2)** |
+| `solver`      | enabled solvers, CdA start/bounds, per-solver options                   | step 3        |
+| `uncertainty` | confidence level, analytic CI, bootstrap (block), Monte Carlo sensor noise | step 4     |
+| `report`      | formats (html/pdf), title, config summary                               | step 5        |
+| `paths.output_report` | report folder                                                   | step 5        |
+
+New sections are **strictly validated**: a typo'd key or an invalid choice raises a
+`ValueError` naming the key and the allowed values (e.g. `bend_handling`, `bootstrap_method`).
+Until the later steps land, these sections are parsed and logged but not yet used.
 
 ---
 
@@ -318,7 +340,7 @@ python scripts/test_load.py
           paths.output_preproc = /…/AeroProject/test/output/preprocessed
           cyclist              = CyclistCfg(body_mass=72.0, …)
           segment              = SegmentCfg(interval_length_sec=60.0, …)
-          preprocessing        = PreprocCfg(calibrate_accelerometer=False, …)
+          preprocessing        = PreprocCfg(calibrate_altitude=False, …)
 14:32:01  INFO     Cyclist
           body_mass          = 72.0 kg
           bike_weight        = 8.5 kg
@@ -470,7 +492,6 @@ Returns a new DataFrame with one column per power component:
 
 | Function                                   | Role                         |
 |--------------------------------------------|------------------------------|
-| `apply_accelerometer_calibration(bcvx_df)` | 3-axis linear fit, overwrite |
 | `correct_altitude(bcvx_df, zero_offset)`   | Remove median drift          |
 | `filter_speed_lowpass(df)`                 | Low-pass on speed            |
 
@@ -510,7 +531,7 @@ cost → pick N cheapest non-overlapping → sort by start time.
 | Function                      | Role                                               |
 |-------------------------------|----------------------------------------------------|
 | `group_files_by_type(folder)` | Scan `*.csv`, group by `(test_id, domain)`         |
-| `load_and_merge(groups)`      | Concat segments, merge cda + ride + bcvx on `SECS` |
+| `load_segments(groups)`       | Read the `combined` CSV of each segment (kept apart, no concat) |
 
 File naming convention (set by `io.save_segment_csvs` / `save_combined_csvs`):
 
@@ -518,8 +539,11 @@ File naming convention (set by `io.save_segment_csvs` / `save_combined_csvs`):
 {test_id}_cda_{idx}.csv
 {test_id}_ride_{idx}.csv
 {test_id}_bcvx_{idx}.csv
-{test_id}_combined_{idx}.csv
+{test_id}_combined_{idx}.csv   # ride + bcvx on one 4 Hz grid (consumed by Stage 2)
 ```
+
+The 1 Hz `CDAData` domain (device-computed CdA) is written to `_cda_` CSVs for
+inspection only; it is never merged or used downstream.
 
 ### 6.4 `cda.postprocessing`
 
@@ -552,6 +576,8 @@ plotting, or config.
 | `CyclistCfg` | `cyclist` ← **NEW**                                     |
 | `SegmentCfg` | `segment`                                               |
 | `PreprocCfg` | `preprocessing` (extended with Butterworth params)      |
+| `VelodromeCfg` / `FieldCfg` | `velodrome` / `field` (active one: `AppConfig.mode_cfg`) |
+| `SolverCfg` / `UncertaintyCfg` / `ReportCfg` | `solver` / `uncertainty` / `report` |
 | `PlotCfg`    | `plot`                                                  |
 | `AppConfig`  | all of the above; loaded by `AppConfig.from_yaml(path)` |
 
@@ -565,7 +591,7 @@ keys → dataclass fields with defaults.
 | Stage | What                                 | Output                                                  |
 |-------|--------------------------------------|---------------------------------------------------------|
 | 1     | JSON → clean → segment → CSVs        | `{tid}_{domain}_{idx}.csv` + `{tid}_combined_{idx}.csv` |
-| 2     | Group → merge → `preprocess_segment` | `{tid}_preprocessed.csv`                                |
+| 2     | Group → merge → `preprocess_segment` | `{tid}_preprocessed_{run}.csv`                                |
 | 3     | `plot_segments`                      | `segments.png` / `.svg`                                 |
 
 Returns `{"preprocessed": {tid: df}, "cyclist": Cyclist, "all_written": [paths]}`.
@@ -649,6 +675,7 @@ No existing module needs to change.
 ### Running tests
 
 ```bash
+pip install -e .[dev] --no-build-isolation
 pytest tests/ -v
 ```
 
@@ -662,7 +689,7 @@ The following are planned and **not yet implemented**:
 - [ ] `cda.solvers/registry.py` – solver name → class factory
 - [ ] `cda.postprocessing/statistics.py` – confidence intervals, R², residuals
 - [ ] `cda.postprocessing/report.py` – LaTeX / HTML summary
-- [ ] `tests/` – unit tests mirroring `src/cda/`
+- [x] `tests/` – foundation tests (preprocessing, merge, power balance); solver tests to come
 - [ ] `docs/architecture.md` – full dependency-graph and data-flow diagram
 - [ ] CI: GitHub Actions running `pytest` on every push
 - [ ] `cda.cyclist` – add `frontal_area_prior`, `cadence`, `gear_ratio` when power-meter data becomes available
@@ -689,4 +716,43 @@ Internal research project. No external distribution intended at this stage.
 
 ---
 
-*Checkpoint v0.2 – Cyclist · Physics · Preprocessing. Next: solvers.*
+## Step 2 – velodrome preprocessing (v0.4)
+
+**Per-setup airspeed calibration** (`preprocessing/airspeed_calibration.py`). The flow at the
+pitot changes with rider position and equipment, so `v_air = scale·v_raw + offset` is fitted
+**separately for every measurement file** (= setup; optionally per segment, `scope: segment`).
+Fit points: steady (`|dv/dt| ≤ max_accel`), fast (`> min_speed`), straight; no-wind assumption
+(velodrome; loops in the field). `fit: scale` is the default because the steady-speed range of one
+ride is too narrow to separate an offset (`scale_offset` falls back to `scale` below `min_range`).
+Manual values per setup win: `airspeed_calibration.overrides: {A-Baseline: {scale: 1.03}}`.
+On the test rides the fitted scale differs per setup (A-Baseline 1.026, D-VanRysel 1.011).
+Results are logged and written to `<test_id>_airspeed_calibration.json`.
+
+**Wind runs.** Each test is preprocessed once per entry of `velodrome.wind_runs`:
+`no_wind` (`v_wind = 0`) and `with_wind` (calibrated airspeed − ground speed; since the fit removes the
+mean, only the fluctuating wind remains). Output: `<test_id>_preprocessed_<run>.csv`;
+`main()` returns `preprocessed[test_id][run]` and `calibrations[test_id]`.
+
+**Speed source** (`preprocessing/speed.py`): `sensor`, `wheel` (`cadence/60 · chainring/cog · wheel_circumference`)
+or `both` (mean); the log warns if they differ > 2 %.
+
+**Bends** (`preprocessing/bends.py`): yaw rate (`gyrZ`, smoothed) above `yaw_rate_threshold_dps` = bend.
+Columns `yaw_rate_dps, is_bend, lateral_accel_g, load_factor, valid`. `bend_handling`:
+`exclude` (bends and straights < `min_straight_sec` → `valid=False`; solvers use `valid` rows),
+`correct` (all valid; `load_factor = sqrt(1+(v·ω/g)²)` scales rolling resistance in
+`assemble_power_balance`), `keep`. Filtering still runs over the whole segment; only the flag changes.
+
+## Step 0 changes (foundation fixes)
+
+- Stage 2 now works **per segment** on a gap-free 4 Hz grid (ride + bcvx inner-joined on `SECS`);
+  the 1 Hz device CDA domain is no longer merged. Result: no NaN cells; `v` is correct (m/s).
+  (Before, `v` came from the 1 Hz device `speed` column in m/s and was divided by 3.6 again.)
+- `v_wind` = airspeed sensor − ground speed (headwind +), consistent with `v_rel = v + v_wind`.
+  Device wind column is ignored.
+- Butterworth cut-offs are in **Hz** (fs = 4 Hz); edge padding covers the filter time constant.
+- `assemble_power_balance`: `P_residual` no longer subtracts both `P_potential` and `P_gravity`
+  (double-counted climbs); it reuses `power_kinetic` / `power_potential` from preprocessing.
+- Relative paths in YAML; `.gitignore`; `run.py`; `tests/`. `calibrate_accelerometer` removed
+  (the function never existed); `correct_altitude` fixed.
+
+*Checkpoint v0.2+ (Step 0 done). Next: mode/config, velodrome preprocessing, solvers.*

@@ -16,3 +16,9 @@ dependencies  = [
 
 [tool.setuptools.packages.find]
 where = ["src"]            # ← tells setuptools the package is under src/
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

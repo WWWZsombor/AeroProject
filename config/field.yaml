@@ -1,0 +1,25 @@
+# ───────────────────────────────────────────────────────────────────
+#  Field test  –  road ride, wind and gradient matter
+#  Everything not listed here is inherited from default.yaml.
+# ───────────────────────────────────────────────────────────────────
+extends: default.yaml
+
+mode: field
+
+field:
+  wind_source:    airspeed          # pitot airspeed − ground speed
+  incline_source: altitude          # gradient from the filtered altitude
+
+# no wind-free reference in the field: 'auto' assumes the mean wind of the ride is ~0
+# (loops / out-and-back). Use method: none or per-setup overrides if that is not true.
+airspeed_calibration:
+  method: auto
+
+# longer windows than on the track; adjust speeds to your route
+segment:
+  interval_length_sec: 60
+  min_speed:           42
+  max_speed:           55
+
+solver:
+  enabled: [ols, chung, kalman, gp]
